@@ -1,0 +1,16 @@
+{
+  "lastChangelogVersion": "0.84.2",
+  "theme": "monokai-pro",
+  "defaultProvider": "github-copilot",
+  "defaultModel": "kimi-k2.7-code",
+  "defaultThinkingLevel": "medium",
+  "skills": [
+    "~/.opencode/skills",
+    "../.github/skills"
+  ],
+  "packages": [
+    "npm:gentle-engram@0.1.8",
+    "npm:pi-mcp-adapter",
+    "../../pi-openspec"
+  ]
+}
