@@ -73,6 +73,36 @@ Present 2–3 approaches using the Trade-off Card Format:
 
 Ground recommendations in project context (team size, deploy frequency, codebase maturity, performance requirements, scale).
 
+### Evaluating library vs. custom-code alternatives
+
+When one of the alternatives is “use an existing npm package” vs. “write it ourselves,” use the configured `npm-registry` MCP to evaluate the package side with real data.
+
+| MCP tool | Use it for |
+|----------|------------|
+| `npm-registry_search_packages` | Discover candidate libraries by capability |
+| `npm-registry_get_package_info` | Latest version, license, dependencies, maintainer health |
+| `npm-registry_compare_packages` | Compare leading libraries on downloads, maintenance, quality |
+| `npm-registry_check_vulnerabilities` | Security check before recommending a version |
+
+How to fold this into the trade-off card:
+
+1. **Estimate custom-code effort** — implementation, tests, docs, ongoing maintenance.
+2. **Search for an npm alternative** and compare the top 2–3 candidates.
+3. **Inspect the chosen package** for dependency count, bundle size implications, and license compatibility.
+4. **Check the latest version** for known vulnerabilities.
+5. **Weight the choice** in the trade-off card: library effort saved vs. dependency risk, lock-in, API fit, and whether the package does more than you need.
+
+Example call shape:
+
+```javascript
+mcp({
+  tool: 'npm-registry_search_packages',
+  args: { query: 'date-fns luxon moment', limit: 5 }
+});
+```
+
+Default to writing from scratch only when the problem is small, stability-critical, or no well-maintained package exists. Otherwise, prefer a low-dependency, actively maintained library with no known vulnerabilities — and always resolve the latest stable version rather than copying old examples.
+
 ## Step 3: Pre-Mortem
 
 Walk through before committing to an approach:

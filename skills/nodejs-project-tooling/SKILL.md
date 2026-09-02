@@ -15,6 +15,38 @@ Configurations here align with `nodejs-code-style` and `typescript-code-style` �
 
 ---
 
+## Package selection with the npm-registry MCP
+
+To follow the admonition above, use the configured `npm-registry` MCP server when choosing or updating tooling packages (`eslint`, `prettier`, `typescript`, `husky`, `renovate` configuration, etc.).
+
+| MCP tool | Use it for |
+|----------|------------|
+| `npm-registry_search_packages` | Discover candidates by keyword |
+| `npm-registry_get_package_info` | Latest version, license, dependencies, maintainers |
+| `npm-registry_compare_packages` | Side-by-side comparison (downloads, maintenance, quality) |
+| `npm-registry_check_vulnerabilities` | Security check before installing a version |
+
+Suggested workflow:
+
+1. Search candidates for the tooling need (e.g. `eslint flat config typescript`).
+2. Compare the 2–3 finalists.
+3. Inspect the chosen package’s latest version.
+4. Check that version for known vulnerabilities.
+5. Install the latest stable release unless a compatibility constraint requires pinning.
+
+Example call shape:
+
+```javascript
+mcp({
+  tool: 'npm-registry_search_packages',
+  args: { query: 'eslint config flat typescript', limit: 5 }
+});
+```
+
+Prefer actively maintained, low-dependency options with no known vulnerabilities. Always resolve current versions before install.
+
+---
+
 ## ESLint (Flat Config — ESLint 9+)
 
 `eslint.config.js`:

@@ -10,6 +10,36 @@ This guide establishes code style standards for Node.js projects using **ESLint*
 
 > **Dependency versions are examples only.** The `package.json`, ESLint, and Prettier snippets in this skill illustrate structure and package choices. When creating a project, resolve and use the latest stable version of each package unless a compatibility constraint requires pinning. Do not copy the example versions verbatim.
 
+### Resolving package versions with the npm-registry MCP
+
+To pick current versions of ESLint, Prettier, plugins, and related tooling, use the configured `npm-registry` MCP server.
+
+| MCP tool | Use it for |
+|----------|------------|
+| `npm-registry_search_packages` | Discover ESLint/Prettier plugins and tooling by keyword |
+| `npm-registry_get_package_info` | Latest version, license, dependencies, maintainers |
+| `npm-registry_compare_packages` | Side-by-side comparison (downloads, maintenance, quality) |
+| `npm-registry_check_vulnerabilities` | Security check before installing a version |
+
+Suggested workflow:
+
+1. Search for the tool or plugin you need (e.g. `eslint node plugin` or `prettier plugin`).
+2. Compare the 2–3 finalists.
+3. Inspect the chosen package’s latest version.
+4. Check that version for known vulnerabilities.
+5. Install the latest stable release unless a compatibility constraint requires pinning.
+
+Example call shape:
+
+```javascript
+mcp({
+  tool: 'npm-registry_search_packages',
+  args: { query: 'eslint node plugin', limit: 5 }
+});
+```
+
+Prefer actively maintained, low-dependency options with no known vulnerabilities. Always resolve current versions before install.
+
 ## ESLint Configuration
 
 ### Recommended Config (`eslint.config.js`)

@@ -74,6 +74,38 @@ This skill scaffolds a standalone API server (REST or GraphQL). It covers the en
 
 ---
 
+## Package selection with the npm-registry MCP
+
+The runtimes, frameworks, ORMs, test runners, and tools above are starting points. Before pinning any of them, verify current npm metadata with the configured `npm-registry` MCP so recommendations reflect real downloads, maintenance, and security posture.
+
+| MCP tool | Use it for |
+|----------|------------|
+| `npm-registry_search_packages` | Discover candidates by keyword |
+| `npm-registry_get_package_info` | Latest version, license, dependencies, maintainers |
+| `npm-registry_compare_packages` | Side-by-side comparison (downloads, maintenance, quality) |
+| `npm-registry_check_vulnerabilities` | Security check before installing a version |
+
+Suggested workflow:
+
+1. Search candidates for each layer (e.g. `hono fastify express`).
+2. Compare the 2–3 finalists.
+3. Inspect the chosen package’s latest version.
+4. Check that version for known vulnerabilities.
+5. Install the latest stable release unless a compatibility constraint requires pinning.
+
+Example call shape:
+
+```javascript
+mcp({
+  tool: 'npm-registry_compare_packages',
+  args: { package1: 'hono', package2: 'fastify' }
+});
+```
+
+Prefer actively maintained, low-dependency options with no known vulnerabilities. Do not copy example versions from this skill verbatim — always resolve the current latest stable release.
+
+---
+
 ## Directory Layout
 
 ```

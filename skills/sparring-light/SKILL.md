@@ -20,6 +20,28 @@ Present 1–2 approaches in a condensed format:
 - **Verdict**: [recommendation + 1-liner why]
 ```
 
+### Library vs. custom-code quick check
+
+If the decision could involve adding an npm package, run a quick `npm-registry` MCP search first. Prefer writing from scratch only when the problem is trivial, no well-maintained package exists, or the dependency would pull in unacceptable risk. Otherwise, include a library alternative in the trade-off scan and use the MCP tools to surface the key facts:
+
+| MCP tool | What it answers |
+|----------|-----------------|
+| `npm-registry_search_packages` | Are there mature packages for this capability? |
+| `npm-registry_compare_packages` | Which candidate is healthier (downloads, maintenance, quality)? |
+| `npm-registry_get_package_info` | Latest version, license, dependency count |
+| `npm-registry_check_vulnerabilities` | Any known security issues? |
+
+Example call shape:
+
+```javascript
+mcp({
+  tool: 'npm-registry_search_packages',
+  args: { query: 'date-fns luxon', limit: 5 }
+});
+```
+
+If the dependency would cross a trust boundary, require heavy customization, or conflict with project context, escalate to the `? ` (deep sparring) protocol.
+
 ## Step 2: Minimal Risk Check
 
 Ask yourself briefly:

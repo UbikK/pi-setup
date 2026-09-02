@@ -86,6 +86,36 @@ Same as Node.js (`printWidth: 100`):
 }
 ```
 
+### Package selection with the npm-registry MCP
+
+The ESLint and Prettier plugin packages listed above are starting points. Before installing React-specific tooling (`eslint-plugin-react`, `eslint-plugin-react-hooks`, `eslint-plugin-jsx-a11y`, etc.), verify current npm metadata with the configured `npm-registry` MCP.
+
+| MCP tool | Use it for |
+|----------|------------|
+| `npm-registry_search_packages` | Discover React ESLint/Prettier plugins by keyword |
+| `npm-registry_get_package_info` | Latest version, license, dependencies, maintainers |
+| `npm-registry_compare_packages` | Side-by-side comparison (downloads, maintenance, quality) |
+| `npm-registry_check_vulnerabilities` | Security check before installing a version |
+
+Suggested workflow:
+
+1. Search for the plugin or helper you need (e.g. `eslint react hooks plugin`).
+2. Compare the 2–3 finalists.
+3. Inspect the chosen package’s latest version.
+4. Check that version for known vulnerabilities.
+5. Install the latest stable release unless a compatibility constraint requires pinning.
+
+Example call shape:
+
+```javascript
+mcp({
+  tool: 'npm-registry_search_packages',
+  args: { query: 'eslint react hooks plugin', limit: 5 }
+});
+```
+
+Prefer actively maintained, low-dependency options with no known vulnerabilities. Always resolve current versions before install.
+
 ## Component Structure
 
 ### Naming Conventions

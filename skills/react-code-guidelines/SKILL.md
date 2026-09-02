@@ -44,6 +44,36 @@ pnpm add @tanstack/react-query
 pnpm add zustand  # for complex state management
 ```
 
+### Package selection with the npm-registry MCP
+
+The stack above (Vite, Tailwind, Zod, TanStack Query, Zustand, Shadcn UI, etc.) is a starting point. Before installing any React ecosystem dependency, verify current npm metadata with the configured `npm-registry` MCP — especially when the “minimal dependency” philosophy means choosing between native code and a library.
+
+| MCP tool | Use it for |
+|----------|------------|
+| `npm-registry_search_packages` | Discover candidates by keyword |
+| `npm-registry_get_package_info` | Latest version, license, dependencies, maintainers |
+| `npm-registry_compare_packages` | Side-by-side comparison (downloads, maintenance, quality) |
+| `npm-registry_check_vulnerabilities` | Security check before installing a version |
+
+Suggested workflow:
+
+1. Search candidates for the capability (e.g. `react state management` or `react query server state`).
+2. Compare the 2–3 finalists.
+3. Inspect the chosen package’s latest version.
+4. Check that version for known vulnerabilities.
+5. Install the latest stable release unless a compatibility constraint requires pinning.
+
+Example call shape:
+
+```javascript
+mcp({
+  tool: 'npm-registry_compare_packages',
+  args: { package1: 'zustand', package2: 'jotai' }
+});
+```
+
+Prefer actively maintained, low-dependency options with no known vulnerabilities. Only add a dependency when the capability is not available via web standards. Do not copy example versions from this skill verbatim — always resolve the current latest stable release.
+
 ### Vite Configuration Best Practices
 ```javascript
 // vite.config.ts
