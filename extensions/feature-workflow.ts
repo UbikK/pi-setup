@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
+import { isAbsolute, join, resolve } from "node:path";
 import { runSubagent } from "./terminal-spawn/index.ts";
 import {
   createFeatureWorkflow,
@@ -10,15 +10,33 @@ import {
   updateFeatureWorkflow,
   writeFeatureArtifact,
 } from "./lib/feature-store";
-import type { FeatureArtifact, FeatureWorkflow } from "./lib/feature-store";
+import type { FeatureAgent, FeatureArtifact, FeatureWorkflow } from "./lib/feature-store";
 import { DEFAULT_AGENT_TOOLS, findAgent } from "./lib/agents-lib";
 
 const SCRATCH_DIR = ".pi/scratch";
 const MAX_PLAN_REVISIONS = 1;
 
+interface PlanOutputStep {
+  title: string;
+  description: string;
+  verification?: string[];
+  agent?: FeatureAgent;
+  projectPath?: string;
+  targetPaths?: string[];
+  dependsOn?: number[];
+}
+
 interface PlanOutput {
   summary: string;
-  steps: Array<{ title: string; description: string; verification?: string[] }>;
+  steps: PlanOutputStep[];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
 function extractJson<T>(text: string): T {
@@ -27,18 +45,82 @@ function extractJson<T>(text: string): T {
 }
 
 function parsePlan(text: string): PlanOutput {
-  const parsed = extractJson<PlanOutput>(text);
-  if (
-    typeof parsed.summary !== "string" ||
-    !Array.isArray(parsed.steps) ||
-    parsed.steps.length === 0 ||
-    !parsed.steps.every((step) =>
-      step && typeof step.title === "string" && typeof step.description === "string",
-    )
-  ) {
+  const parsed = extractJson<unknown>(text);
+  if (!isRecord(parsed) || typeof parsed.summary !== "string" || !Array.isArray(parsed.steps) || parsed.steps.length === 0) {
     throw new Error("Planner output must contain a summary and at least one valid step");
   }
-  return parsed;
+
+  const validAgents: FeatureAgent[] = ["frontend-engineer", "backend-engineer", "main"];
+  const steps = parsed.steps.map((value, index): PlanOutputStep => {
+    if (!isRecord(value) || typeof value.title !== "string" || typeof value.description !== "string") {
+      throw new Error(`Planner step ${index + 1} must include a title and description`);
+    }
+    if (value.agent !== undefined && !validAgents.includes(value.agent as FeatureAgent)) {
+      throw new Error(`Planner step ${index + 1} has unknown agent: ${String(value.agent)}`);
+    }
+    if (value.projectPath !== undefined && typeof value.projectPath !== "string") {
+      throw new Error(`Planner step ${index + 1} has invalid projectPath`);
+    }
+    if (value.targetPaths !== undefined && !isStringArray(value.targetPaths)) {
+      throw new Error(`Planner step ${index + 1} targetPaths must be an array of strings`);
+    }
+    if (value.verification !== undefined && !isStringArray(value.verification)) {
+      throw new Error(`Planner step ${index + 1} verification must be an array of strings`);
+    }
+    const dependsOn = value.dependsOn ?? [];
+    if (
+      !Array.isArray(dependsOn) ||
+      !dependsOn.every((dependency) => Number.isInteger(dependency) && dependency >= 1 && dependency <= index)
+    ) {
+      throw new Error(`Planner step ${index + 1} dependencies must refer to earlier step numbers`);
+    }
+    const targetPaths = (value.targetPaths as string[] | undefined) ?? [];
+    if (targetPaths.some((target) =>
+      !target.trim() || isAbsolute(target) || target.split(/[\\/]+/).includes(".."),
+    )) {
+      throw new Error(`Planner step ${index + 1} targetPaths must be non-empty relative paths without '..'`);
+    }
+
+    return {
+      title: value.title,
+      description: value.description,
+      verification: value.verification as string[] | undefined,
+      agent: value.agent as FeatureAgent | undefined,
+      projectPath: value.projectPath as string | undefined,
+      targetPaths,
+      dependsOn: dependsOn as number[],
+    };
+  });
+  return { summary: parsed.summary, steps };
+}
+
+async function normalizePlan(plan: PlanOutput, cwd: string): Promise<PlanOutput> {
+  const steps = await Promise.all(plan.steps.map(async (step, index) => {
+    const projectPath = resolve(cwd, step.projectPath ?? ".");
+    let projectStat;
+    try {
+      projectStat = await stat(projectPath);
+    } catch {
+      throw new Error(`Planner step ${index + 1} project path does not exist: ${projectPath}`);
+    }
+    if (!projectStat.isDirectory()) {
+      throw new Error(`Planner step ${index + 1} project path is not a directory: ${projectPath}`);
+    }
+
+    const agent = step.agent ?? "main";
+    if (agent === "main" && projectPath !== resolve(cwd)) {
+      throw new Error(`Planner step ${index + 1} targets another project but is assigned to main; choose a named specialist`);
+    }
+    if (agent !== "main") {
+      const definition = findAgent(projectPath, agent);
+      if (!definition || !definition.tools?.includes("edit") || !definition.tools.includes("write")) {
+        throw new Error(`Planner step ${index + 1} agent is unavailable or lacks edit/write tools: ${agent}`);
+      }
+    }
+
+    return { ...step, agent, projectPath, targetPaths: step.targetPaths ?? [], dependsOn: step.dependsOn ?? [] };
+  }));
+  return { ...plan, steps };
 }
 
 function parseVerdict(text: string): "approve" | "revise" | "block" | undefined {
@@ -54,10 +136,19 @@ function splitTitleAndRequest(value: string): { title: string; request: string }
   return title && request ? { title, request } : undefined;
 }
 
-function formatPlan(workflow: FeatureWorkflow): string {
-  const steps = workflow.steps.map((step, index) =>
-    `${index + 1}. **${step.title}** — ${step.description}`,
-  );
+function formatPlan(workflow: FeatureWorkflow, cwd: string): string {
+  const stepNames = new Map(workflow.steps.map((step, index) => [step.id, `${index + 1}. ${step.title}`]));
+  const steps = workflow.steps.map((step, index) => {
+    const agent = step.agent ?? "main";
+    const projectPath = step.projectPath ?? cwd;
+    const targets = step.targetPaths?.length ? step.targetPaths.join(", ") : "unspecified";
+    const dependencies = step.dependsOn?.map((id) => stepNames.get(id) ?? id).join(", ") || "none";
+    return [
+      `${index + 1}. **${step.title}** — ${step.description}`,
+      `   Executor: ${agent} | Project: ${projectPath}`,
+      `   Target paths: ${targets} | Depends on: ${dependencies}`,
+    ].join("\n");
+  });
   return [
     `## ${workflow.title} (${workflow.id})`,
     "",
@@ -160,12 +251,16 @@ export default function (pi: ExtensionAPI) {
         const scout = await readFeatureArtifact(ctx.cwd, workflow.id, "scout");
         const planText = await runAgent(ctx, workflow, "plan", [
           "You are a read-only planning agent. Do not create, modify, or delete files.",
-          "Produce a reviewable plan as one JSON object in a ```json code block, shape: {\"summary\": string, \"steps\": [{\"title\": string, \"description\": string, \"verification\": string[]}]}.",
-          "Make as many steps as needed for this feature; do not impose a fixed step count. Keep each step reviewable and independently verifiable.",
+          "Produce a reviewable plan as one JSON object in a ```json code block, shape: {\"summary\": string, \"steps\": [{\"title\": string, \"description\": string, \"verification\": string[], \"agent\": \"frontend-engineer\" | \"backend-engineer\" | \"main\", \"projectPath\": string, \"targetPaths\": string[], \"dependsOn\": number[]}]}.",
+          "Return every step with agent (frontend-engineer, backend-engineer, or main), projectPath, targetPaths, and dependsOn fields.",
+          `Resolve projectPath relative to workflow project root ${ctx.cwd}; use another existing project directory only when request explicitly names it. Use an absolute path for named external projects.`,
+          "Assign frontend-engineer to UI/client work, backend-engineer to API/server/data work, and main to general or cross-cutting work.",
+          "List likely relative file/directory scopes in targetPaths; use [] when uncertain. dependsOn contains 1-based earlier step numbers only; [] means independent. Do not claim steps are independent if they share target paths or depend on each other.",
+          "Make as many steps as needed; keep each reviewable and independently verifiable. Plan approval shows executor, project, targets, and dependencies before any execution approval.",
           `Feature request:\n${workflow.request}`,
           `Scout report:\n${scout}`,
         ].join("\n\n"), {});
-        const plan = parsePlan(planText);
+        const plan = await normalizePlan(parsePlan(planText), ctx.cwd);
         const planJson = `${JSON.stringify(plan, null, 2)}\n`;
         workflow = await saveArtifact(ctx.cwd, workflow, "plan", planJson, (current) => ({
           ...current,
@@ -177,6 +272,10 @@ export default function (pi: ExtensionAPI) {
             title: step.title,
             description: step.description,
             verification: step.verification,
+            agent: step.agent,
+            projectPath: step.projectPath,
+            targetPaths: step.targetPaths,
+            dependsOn: step.dependsOn?.map((dependency) => `step-${dependency}`),
             status: "pending",
           })),
           lastError: undefined,
@@ -201,7 +300,7 @@ export default function (pi: ExtensionAPI) {
         const planArtifact = await readFeatureArtifact(ctx.cwd, workflow.id, "plan");
         const architectSystemPrompt = [
           architect.systemPrompt,
-          "For this workflow, review the proposed plan against the request and scout report.",
+          "Review executor assignments, project paths, target scopes, and dependencies as part of this plan. Reject unsupported agents, invalid project targets, or unsupported parallel assumptions.",
           "End your response with exactly one machine-readable line: VERDICT: APPROVE, VERDICT: REVISE, or VERDICT: BLOCK.",
           "Use REVISE only for concrete plan changes. Use BLOCK for a fundamental blocker. State required changes clearly.",
         ].join("\n\n");
@@ -225,13 +324,15 @@ export default function (pi: ExtensionAPI) {
 
           const revisedText = await runAgent(ctx, workflow, "plan-revision", [
             "You are a read-only planning agent. Do not create, modify, or delete files.",
-            "Return only a JSON plan in a ```json code block, with summary and variable-length steps.",
-            `Request:\n${workflow.request}`,
+            "Return only a JSON plan in a ```json code block, with summary and variable-length steps; include agent, projectPath, targetPaths, and dependsOn for every step.",
+            `Resolve projectPath relative to workflow project root ${ctx.cwd}; preserve another project only if request explicitly named it.`,
+            "Use 1-based earlier step numbers for dependsOn. Preserve assignments and scopes unless architect feedback requires changing them.",
+            `Request:\n${workflow.request}`,,
             `Scout report:\n${scout}`,
             `Current plan:\n${planArtifact}`,
             `Architect's required revisions:\n${finalReport}`,
           ].join("\n\n"), {});
-          const revisedPlan = parsePlan(revisedText);
+          const revisedPlan = await normalizePlan(parsePlan(revisedText), ctx.cwd);
           workflow = await saveArtifact(ctx.cwd, workflow, "plan", `${JSON.stringify(revisedPlan, null, 2)}\n`, (current) => ({
             ...current,
             summary: revisedPlan.summary,
@@ -240,6 +341,10 @@ export default function (pi: ExtensionAPI) {
               title: step.title,
               description: step.description,
               verification: step.verification,
+              agent: step.agent,
+              projectPath: step.projectPath,
+              targetPaths: step.targetPaths,
+              dependsOn: step.dependsOn?.map((dependency) => `step-${dependency}`),
               status: "pending",
             })),
           }));
@@ -335,9 +440,9 @@ export default function (pi: ExtensionAPI) {
             `Revision: ${workflow.revision} | Architect: ${workflow.architectModel || "not configured"}`,
             "",
             workflow.summary ?? workflow.request,
+            `Last error: ${workflow.lastError ?? "none"}`,
             "",
-            ...workflow.steps.map((step, index) => `${index + 1}. [${step.status}] ${step.title} — ${step.description}`),
-            workflow.lastError ? `\nLast error: ${workflow.lastError}` : "",
+            ...workflow.steps.map((step, index) => `${index + 1}. [${step.status}] ${step.title} — ${step.description} | executor: ${step.agent ?? "main"} | project: ${step.projectPath ?? ctx.cwd} | targets: ${step.targetPaths?.join(", ") || "unspecified"} | depends on: ${step.dependsOn?.join(", ") || "none"}`),
             "",
             ...await Promise.all(artifacts.filter((name) => workflow.artifacts[name]).map(async (name) =>
               `### ${name}\n\n${await readFeatureArtifact(ctx.cwd, id, name)}`,
@@ -358,7 +463,10 @@ export default function (pi: ExtensionAPI) {
             pi.appendEntry("plan-state", {
               task: workflow.request,
               summary: workflow.summary ?? "",
-              steps: workflow.steps.map(({ title, description }) => ({ title, description })),
+              steps: workflow.steps.map(({ title, description, agent, projectPath, targetPaths, dependsOn }) => ({
+                title, description, agent: agent ?? "main", projectPath: projectPath ?? ctx.cwd,
+                targetPaths: targetPaths ?? [], dependsOn: dependsOn ?? [],
+              })),
               currentIndex,
               featureId: workflow.id,
             });
@@ -375,7 +483,7 @@ export default function (pi: ExtensionAPI) {
             ctx.ui.notify(`Feature ${id} is not waiting for plan approval.`, "error");
             return;
           }
-          const approved = await ctx.ui.confirm("Approve feature plan?", formatPlan(workflow));
+          const approved = await ctx.ui.confirm("Approve feature plan?", formatPlan(workflow, ctx.cwd));
           if (!approved) return;
           workflow = await update(ctx.cwd, workflow, (current) => ({
             ...current,
@@ -388,7 +496,10 @@ export default function (pi: ExtensionAPI) {
           pi.appendEntry("plan-state", {
             task: workflow.request,
             summary: workflow.summary ?? "",
-            steps: workflow.steps.map(({ title, description }) => ({ title, description })),
+            steps: workflow.steps.map(({ title, description, agent, projectPath, targetPaths, dependsOn }) => ({
+              title, description, agent: agent ?? "main", projectPath: projectPath ?? ctx.cwd,
+              targetPaths: targetPaths ?? [], dependsOn: dependsOn ?? [],
+            })),
             currentIndex: 0,
             featureId: workflow.id,
           });

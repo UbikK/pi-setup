@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 
 export const FEATURE_STATE_VERSION = 1;
@@ -9,12 +9,17 @@ export type FeatureStage = "scout" | "architect" | "plan" | "approval" | "execut
 export type FeatureStatus = "active" | "awaiting_approval" | "blocked" | "failed" | "completed" | "cancelled";
 export type FeatureArtifact = "scout" | "architect" | "plan";
 export type FeatureStepStatus = "pending" | "running" | "passed" | "failed" | "skipped";
+export type FeatureAgent = "frontend-engineer" | "backend-engineer" | "main";
 
 export interface FeatureStep {
   id: string;
   title: string;
   description: string;
   status: FeatureStepStatus;
+  agent?: FeatureAgent;
+  projectPath?: string;
+  targetPaths?: string[];
+  dependsOn?: string[];
   verification?: string[];
   result?: string;
 }
@@ -102,7 +107,21 @@ function validateWorkflow(value: unknown, id?: string): FeatureWorkflow {
     typeof step.id === "string" &&
     typeof step.title === "string" &&
     typeof step.description === "string" &&
-    validStepStatuses.includes(step.status as FeatureStepStatus)
+    validStepStatuses.includes(step.status as FeatureStepStatus) &&
+    (step.agent === undefined || ["frontend-engineer", "backend-engineer", "main"].includes(step.agent as string)) &&
+    (step.projectPath === undefined || (typeof step.projectPath === "string" && isAbsolute(step.projectPath))) &&
+    (step.targetPaths === undefined || (Array.isArray(step.targetPaths) && step.targetPaths.every((path) =>
+      typeof path === "string" && path.trim() !== "" && !isAbsolute(path) && !path.split(/[\\/]+/).includes(".."),
+    ))) &&
+    (step.dependsOn === undefined || (Array.isArray(step.dependsOn) && step.dependsOn.every((id) => typeof id === "string")))
+  );
+  const stepPositions = validSteps ? new Map(workflow.steps.map((step, index) => [step.id, index])) : new Map<string, number>();
+  const validDependencies = validSteps && stepPositions.size === workflow.steps.length && workflow.steps.every((step) =>
+    (step.dependsOn === undefined || step.dependsOn.every((id) => {
+      const dependencyIndex = stepPositions.get(id);
+      const stepIndex = stepPositions.get(step.id);
+      return dependencyIndex !== undefined && stepIndex !== undefined && dependencyIndex < stepIndex;
+    })),
   );
 
   if (
@@ -119,6 +138,7 @@ function validateWorkflow(value: unknown, id?: string): FeatureWorkflow {
     typeof workflow.architectModel !== "string" ||
     !["pending", "approved", "rejected"].includes(workflow.approval) ||
     !validSteps ||
+    !validDependencies ||
     (workflow.currentStepIndex !== undefined &&
       (!Number.isInteger(workflow.currentStepIndex) || workflow.currentStepIndex < 0 || workflow.currentStepIndex > workflow.steps.length)) ||
     !isRecord(workflow.artifacts)

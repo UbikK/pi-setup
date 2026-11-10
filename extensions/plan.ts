@@ -3,10 +3,15 @@ import { join } from "node:path";
 import { mkdir } from "node:fs/promises";
 import { runSubagent } from "./terminal-spawn/index.ts";
 import { readFeatureWorkflow, updateFeatureWorkflow } from "./lib/feature-store";
+import type { FeatureAgent } from "./lib/feature-store";
 
 interface PlanStep {
   title: string;
   description: string;
+  agent?: FeatureAgent;
+  projectPath?: string;
+  targetPaths?: string[];
+  dependsOn?: string[];
 }
 
 interface PlanState {
