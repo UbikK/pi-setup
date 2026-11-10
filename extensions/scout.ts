@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 import { mkdir } from "node:fs/promises";
-import { runSubagent } from "./cmux-spawn";
+import { runSubagent } from "./terminal-spawn";
 
 export default function (pi: ExtensionAPI) {
   pi.registerCommand("scout", {

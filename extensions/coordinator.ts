@@ -1,14 +1,17 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile, unlink } from "node:fs/promises";
 import { join } from "node:path";
-import { runSubagent } from "./cmux-spawn";
+import { runSubagent } from "./terminal-spawn";
+import { DEFAULT_AGENT_TOOLS, discoverAgents, findAgent } from "./lib/agents-lib";
 
 interface Delegation {
   id: string;
-  mode: "scout" | "plan";
+  mode: string;
   task: string;
   status: "pending" | "done" | "failed";
   outputFile: string;
+  model?: string;
+  thinkingLevel?: string;
   error?: string;
 }
 
@@ -47,7 +50,7 @@ export default function (pi: ExtensionAPI) {
     pi.appendEntry("delegation", delegation);
   }
 
-  function buildPrompt(mode: "scout" | "plan", task: string): string {
+  function buildPrompt(mode: string, task: string): string {
     if (mode === "scout") {
       return [
         "You are a scout agent. Do not write, edit, delete, or create any files.",
@@ -89,22 +92,50 @@ export default function (pi: ExtensionAPI) {
     ].join("\n");
   }
 
-  // /delegate scout|plan <task>
+  // /delegate [scout|plan|<agent-name>] <task>
   pi.registerCommand("delegate", {
-    description: "Delegate a scout or planning task to a read-only sub-agent",
+    description: "Delegate a task to a read-only sub-agent (scout, plan, or a named agent)",
     handler: async (args, ctx) => {
       const parts = args.trim().split(/\s+/);
-      let mode: "scout" | "plan" = "scout";
-      let task = args.trim();
+      const head = parts[0] ?? "";
+      const namedAgent = head ? findAgent(ctx.cwd, head) : undefined;
+      const isMode = head === "scout" || head === "plan" || !!namedAgent;
 
-      if (parts[0] === "scout" || parts[0] === "plan") {
-        mode = parts[0];
-        task = parts.slice(1).join(" ").trim();
-      }
+      const mode = isMode ? head : "scout";
+      const task = (isMode ? parts.slice(1).join(" ") : args).trim();
 
       if (!task) {
-        ctx.ui.notify("Usage: /delegate [scout|plan] <task description>", "error");
+        const available = discoverAgents(ctx.cwd)
+          .map((a) => a.name)
+          .join(", ");
+        ctx.ui.notify(
+          [
+            "Usage: /delegate [scout|plan|<agent>] <task description>",
+            available ? `Agents: ${available}` : "No named agents found in <agent-dir>/agents or .pi/agents",
+          ].join("\n"),
+          "error"
+        );
         return;
+      }
+
+      const agentModel = namedAgent?.model;
+      if (agentModel) {
+        const separator = agentModel.indexOf("/");
+        if (separator <= 0 || separator === agentModel.length - 1) {
+          ctx.ui.notify(`Agent ${mode} has invalid model setting: ${agentModel}`, "error");
+          return;
+        }
+        const provider = agentModel.slice(0, separator);
+        const modelId = agentModel.slice(separator + 1);
+        const resolvedModel = ctx.modelRegistry.find(provider, modelId);
+        if (!resolvedModel) {
+          ctx.ui.notify(`Agent ${mode} model is not available: ${agentModel}`, "error");
+          return;
+        }
+        if (!ctx.modelRegistry.hasConfiguredAuth(resolvedModel)) {
+          ctx.ui.notify(`Agent ${mode} model has no configured authentication: ${agentModel}`, "error");
+          return;
+        }
       }
 
       const id = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -117,13 +148,30 @@ export default function (pi: ExtensionAPI) {
         task,
         status: "pending",
         outputFile,
+        model: agentModel,
+        thinkingLevel: namedAgent?.thinkingLevel ?? "low",
       };
       saveDelegation(delegation);
 
       ctx.ui.notify(`Delegated ${mode} agent ${id}`, "info");
 
+      // Named agents supply their own system prompt file; built-in modes embed
+      // the prompt in the message.
+      let promptFile: string | undefined;
+      let prompt: string;
+      let tools: string[];
+
+      if (namedAgent) {
+        promptFile = join(scratchDir, `${id}.system.md`);
+        await writeFile(promptFile, namedAgent.systemPrompt, "utf8");
+        prompt = `Task: ${task}`;
+        tools = namedAgent.tools ?? DEFAULT_AGENT_TOOLS;
+      } else {
+        prompt = buildPrompt(mode, task);
+        tools = DEFAULT_AGENT_TOOLS;
+      }
+
       try {
-        const prompt = buildPrompt(mode, task);
         const result = await runSubagent(pi, {
           ctx,
           command: [
@@ -132,9 +180,11 @@ export default function (pi: ExtensionAPI) {
             "--no-session",
             "--no-extensions",
             "--thinking",
-            "low",
+            namedAgent?.thinkingLevel ?? "low",
+            ...(agentModel ? ["--model", agentModel] : []),
             "--tools",
-            "read,find,grep,ls",
+            tools.join(","),
+            ...(promptFile ? ["--append-system-prompt", promptFile] : []),
             prompt,
           ],
           outputFile,
@@ -144,12 +194,22 @@ export default function (pi: ExtensionAPI) {
 
         // outputFile is already populated by the subagent script.
         const status = result.exitCode === 0 ? "done" : "failed";
-        saveDelegation({ ...delegation, status, error: status === "failed" ? `exit ${result.exitCode}` : undefined });
+        const error = status === "failed"
+          ? result.output.trim().slice(-1000) || `exit ${result.exitCode}`
+          : undefined;
+        saveDelegation({ ...delegation, status, error });
+        if (promptFile) await unlink(promptFile).catch(() => {});
 
         if (status === "done") {
-          ctx.ui.notify(`${mode} agent ${id} finished`, "info");
+          ctx.ui.notify(
+            `Delegated ${mode} agent ${id} finished${agentModel ? ` using ${agentModel} (${namedAgent?.thinkingLevel ?? "low"} thinking)` : ""}`,
+            "info",
+          );
         } else {
-          ctx.ui.notify(`${mode} agent ${id} failed (exit ${result.exitCode})`, "error");
+          ctx.ui.notify(
+            `Agent ${id} failed (exit ${result.exitCode})${error ? `: ${error}` : ""}`,
+            "error",
+          );
         }
 
         pi.sendMessage(
@@ -160,8 +220,8 @@ export default function (pi: ExtensionAPI) {
                 type: "text",
                 text:
                   status === "done"
-                    ? `**${mode} agent \`${id}\` finished.**\n\nRun \`/continue ${id}\` to bring its report into the conversation.`
-                    : `**${mode} agent \`${id}\` finished with exit ${result.exitCode}.**\n\nRun \`/continue ${id}\` to inspect the partial report.`,
+                    ? `**${mode} agent \`${id}\` finished.**${agentModel ? ` Model: \`${agentModel}\` (${namedAgent?.thinkingLevel ?? "low"} thinking).` : ""}\n\nRun \`/continue ${id}\` to bring its report into the conversation.`
+                    : `**${mode} agent \`${id}\` finished with exit ${result.exitCode}.**${error ? `\n\n${error}` : ""}\n\nRun \`/continue ${id}\` to inspect the partial report.`,
               },
             ],
             display: true,
@@ -171,6 +231,7 @@ export default function (pi: ExtensionAPI) {
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err);
         saveDelegation({ ...delegation, status: "failed", error });
+        if (promptFile) await unlink(promptFile).catch(() => {});
         ctx.ui.notify(`Agent ${id} failed: ${error}`, "error");
       }
     },
@@ -178,24 +239,48 @@ export default function (pi: ExtensionAPI) {
 
   // /agents
   pi.registerCommand("agents", {
-    description: "List delegated sub-agents and their status",
+    description: "List available agent definitions and delegated sub-agents",
     handler: async (_args, ctx) => {
-      const delegations = getDelegations(ctx);
-      if (delegations.length === 0) {
-        ctx.ui.notify("No delegated agents yet.", "info");
-        return;
-      }
+      const available = discoverAgents(ctx.cwd);
+      const availableLines = [
+        "`scout` — read-only recon report",
+        "`plan` — read-only reviewable plan",
+        ...available.map((a) => {
+          const options = [
+            a.tools ? `tools: ${a.tools.join(",")}` : "",
+            a.model ? `model: ${a.model}` : "",
+            a.thinkingLevel ? `thinking: ${a.thinkingLevel}` : "",
+          ].filter(Boolean).join(", ");
+          return `\`${a.name}\` — ${a.description}${options ? ` (${options})` : ""}`;
+        }),
+      ];
 
-      const lines = delegations.map((d) => {
+      const delegations = getDelegations(ctx);
+      const latest = new Map<string, (typeof delegations)[number]>();
+      for (const d of delegations) latest.set(d.id, d);
+
+      const delegationLines = [...latest.values()].map((d) => {
         const status = d.status === "done" ? "✓" : d.status === "failed" ? "✗" : "○";
-        return `${status} \`${d.id}\` [${d.mode}] ${d.task}`;
+        const model = d.model ? ` | model: ${d.model} (${d.thinkingLevel ?? "low"} thinking)` : "";
+        return `${status} \`${d.id}\` [${d.mode}] ${d.task}${model}`;
       });
 
       pi.sendMessage(
         {
           customType: "agent-list",
           content: [
-            { type: "text", text: `## Delegated agents\n\n${lines.join("\n")}` },
+            {
+              type: "text",
+              text: [
+                "## Available agents",
+                "",
+                availableLines.join("\n"),
+                "",
+                "## Delegations",
+                "",
+                delegationLines.length > 0 ? delegationLines.join("\n") : "_none yet_",
+              ].join("\n"),
+            },
           ],
           display: true,
         },
@@ -237,8 +322,7 @@ export default function (pi: ExtensionAPI) {
       }
 
       pi.sendUserMessage(
-        `Here is the ${delegation.mode} report from sub-agent \`${id}\` for the task: ${delegation.task}\n\n---\n\n${output}`,
-        { triggerTurn: true }
+        `Here is the ${delegation.mode} report from sub-agent \`${id}\` for the task: ${delegation.task}\n\n---\n\n${output}`
       );
     },
   });

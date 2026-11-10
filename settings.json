@@ -1,16 +1,30 @@
 {
-  "lastChangelogVersion": "0.84.3",
-  "theme": "monokai-pro",
-  "defaultProvider": "github-copilot",
-  "defaultModel": "kimi-k2.7-code",
+  "lastChangelogVersion": "1.5.1",
+  "theme": "tokyonight-moon",
+  "defaultProvider": "gaio",
+  "defaultModel": "scaleway/deepseek-v4.1-flash",
   "defaultThinkingLevel": "medium",
   "skills": [
     "~/.opencode/skills",
-    "../.github/skills"
+    "~/.github/skills"
   ],
   "packages": [
-    "npm:gentle-engram@0.1.8",
-    "npm:pi-mcp-adapter",
-    "../../pi-openspec"
+    "npm:gentle-engram",
+    "../../pi-openspec",
+    "npm:pi-caveman",
+    "npm:@bukutsu/pi-ping",
+    "npm:@juicesharp/rpiv-todo",
+    "npm:@juanibiapina/pi-tokyonight",
+    "npm:pi-starline"
+  ],
+  "extensions": [
+    "-builtin:mcp"
+  ],
+  "enabledModels": [
+    "github-copilot/kimi-k3",
+    "gaio/azure/gpt-6-luna",
+    "gaio/azure/gpt-6.1-terra",
+    "gaio/azure/gpt-6.1-sol",
+    "gaio/scaleway/deepseek-v4.1-flash"
   ]
 }

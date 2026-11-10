@@ -3,7 +3,7 @@
   "entries": {
     "[\"npx\",\"mcp-npm-registry\",\"\"]": {
       "resolvedBin": "/Users/alberic.cohen/.npm/_npx/5046a178ae422e5e/node_modules/mcp-npm-registry/dist/index.js",
-      "resolvedAt": 1787925195611,
+      "resolvedAt": 1791192149957,
       "packageVersion": "1.2.0",
       "isJs": true
     }

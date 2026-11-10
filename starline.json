@@ -1,0 +1,39 @@
+{
+  "colorSources": {
+    "editor": "theme",
+    "starship": "theme"
+  },
+  "features": {
+    "copyFriendly": true
+  },
+  "contextStyle": "text+gauge",
+  "pathDisplay": {
+    "mode": "full"
+  },
+  "icons": {
+    "mode": "nerd"
+  },
+  "pill": {
+    "segments": [
+      "model",
+      "thinking",
+      "previousPrompt",
+      "latest",
+      "queue",
+      "subagents",
+      "cwd",
+      "git",
+      "context",
+      "tps",
+      "cost",
+      "extensionStatus",
+      "extensionStatus:caveman",
+      "extensionStatus:engram"
+    ]
+  },
+  "extensionStatuses": {
+    "placements": {
+      "engram": "left"
+    }
+  }
+}

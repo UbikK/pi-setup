@@ -1,7 +1,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 import { mkdir } from "node:fs/promises";
-import { runSubagent } from "./cmux-spawn";
+import { runSubagent } from "./terminal-spawn/index.ts";
+import { readFeatureWorkflow, updateFeatureWorkflow } from "./lib/feature-store";
 
 interface PlanStep {
   title: string;
@@ -13,6 +14,7 @@ interface PlanState {
   summary: string;
   steps: PlanStep[];
   currentIndex: number;
+  featureId?: string;
 }
 
 export default function (pi: ExtensionAPI) {
@@ -158,6 +160,22 @@ export default function (pi: ExtensionAPI) {
       }
 
       if (plan.currentIndex >= plan.steps.length) {
+        if (plan.featureId) {
+          const workflow = await readFeatureWorkflow(ctx.cwd, plan.featureId);
+          if (workflow.approval !== "approved") {
+            ctx.ui.notify(`Feature ${plan.featureId} has no approved plan; refusing execution.`, "error");
+            return;
+          }
+          const completed = await updateFeatureWorkflow(ctx.cwd, workflow.id, workflow.revision, (current) => ({
+            ...current,
+            stage: "complete",
+            status: "completed",
+            currentStepIndex: current.steps.length,
+            steps: current.steps.map((step) => ({ ...step, status: "passed" })),
+          }));
+          ctx.ui.notify(`Feature ${completed.id} plan complete.`, "info");
+          return;
+        }
         ctx.ui.notify("Plan complete.", "info");
         return;
       }
@@ -169,7 +187,25 @@ export default function (pi: ExtensionAPI) {
       );
       if (!confirmed) return;
 
-      // Advance before execution so the state is correct if the user reloads
+      if (plan.featureId) {
+        const workflow = await readFeatureWorkflow(ctx.cwd, plan.featureId);
+        if (workflow.approval !== "approved" || workflow.stage !== "execution") {
+          ctx.ui.notify(`Feature ${plan.featureId} is not approved for execution.`, "error");
+          return;
+        }
+        await updateFeatureWorkflow(ctx.cwd, workflow.id, workflow.revision, (current) => ({
+          ...current,
+          currentStepIndex: plan.currentIndex,
+          steps: current.steps.map((item, index) => {
+            if (index === plan.currentIndex) return { ...item, status: "running" };
+            if (index < plan.currentIndex && item.status === "running") return { ...item, status: "passed" };
+            return item;
+          }),
+        }));
+      }
+
+      // Advance before execution so the state is correct if the user reloads.
+      // Feature workflows persist the current running step and replay it on resume if interrupted.
       savePlan({ ...plan, currentIndex: plan.currentIndex + 1 });
 
       pi.sendUserMessage(
@@ -178,8 +214,7 @@ export default function (pi: ExtensionAPI) {
           "",
           `**${step.title}**`,
           step.description,
-        ].join("\n"),
-        { triggerTurn: true }
+        ].join("\n")
       );
     },
   });
