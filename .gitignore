@@ -4,3 +4,6 @@ sessions
 auth.json
 models-store.json
 mcp-cache.json
+.fallow
+install
+models.json
