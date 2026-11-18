@@ -1,0 +1,15 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "gaio/gpt-6-luna",
+  "experimental": {
+    "todo": true
+  },
+  "mcp": {
+    "servers": {
+      "npm-registry": {
+        "type": "local",
+        "command": ["npx", "mcp-npm-registry"]
+      }
+    }
+  }
+}

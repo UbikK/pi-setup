@@ -13,7 +13,7 @@ Default to KISS and YAGNI. Avoid over-refinement, over-engineering and unnecessa
 
 ## Coding Workflow
 
-For broad or multi-step tasks, use `/scout` and `/plan` before writing code.
+For broad or multi-step tasks, use OpenCode's built-in `plan` agent (already configured as the default). Use built-in `explore` for read-only repository reconnaissance when useful. Do not add Pi-specific `/scout`, `/plan`, or `/plan-next` commands.
 For trivial or single-file tasks, answer directly.
 
 A task is **broad** if it is likely multi-file, uses an unfamiliar API, or has ambiguous scope. Examples:
@@ -21,15 +21,7 @@ A task is **broad** if it is likely multi-file, uses an unfamiliar API, or has a
 - Broad: refactor authentication, migrate to a new framework, design a new module.
 - Trivial: rename a variable, fix a typo, explain a function.
 
-When broad:
-
-1. Ask: "This looks like a multi-step task. I'll run `/scout` first, then `/plan`. OK?"
-2. If confirmed:
-   - `/scout <task>`
-   - `/plan <task>` (using the scout report)
-   - Execute one step at a time with `/plan-next`
-
-Never run `/scout` or `/plan` without explicit confirmation.
+For broad work, produce a reviewable plan first. After user approval, execute one reviewable step at a time and pause for approval before each step.
 
 ## Intensity Protocol
 
