@@ -1,6 +1,7 @@
 import { access, constants as fsConstants, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
+import type { RunScriptOptions } from "./types";
 
 export const POLL_INTERVAL_MS = 500;
 
@@ -14,12 +15,7 @@ export function shellQuote(s: string): string {
  * `outputFile` and an exit-code meta file. Both backends use the same script so
  * quoting and cwd handling behave identically.
  */
-export async function writeRunScript(options: {
-  command: string[];
-  cwd: string;
-  outputFile: string;
-  metaFile: string;
-}): Promise<string> {
+export async function writeRunScript(options: RunScriptOptions): Promise<string> {
   const dir = dirname(options.outputFile);
   await mkdir(dir, { recursive: true });
 
@@ -30,7 +26,10 @@ export async function writeRunScript(options: {
     "#!/usr/bin/env bash",
     `cd ${shellQuote(options.cwd)}`,
     `set +e`,
-    `${cmdLine} > ${shellQuote(options.outputFile)} 2>&1`,
+    `${cmdLine} > ${shellQuote(options.outputFile)} 2>&1 &`,
+    "CHILD_PID=$!",
+    `echo \"$CHILD_PID\" > ${shellQuote(options.pidFile)}`,
+    "wait \"$CHILD_PID\"",
     "EXIT_CODE=$?",
     `echo '{"exitCode": '"$EXIT_CODE"', "done": true}' > ${shellQuote(options.metaFile)}`,
     "exit $EXIT_CODE",

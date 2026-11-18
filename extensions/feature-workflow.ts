@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { mkdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
+import { hostname } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { runSubagent } from "./terminal-spawn/index.ts";
 import {
@@ -8,9 +9,10 @@ import {
   readFeatureArtifact,
   readFeatureWorkflow,
   updateFeatureWorkflow,
+  updateFeatureWorkflowLatest,
   writeFeatureArtifact,
 } from "./lib/feature-store";
-import type { FeatureAgent, FeatureArtifact, FeatureWorkflow } from "./lib/feature-store";
+import type { FeatureAgent, FeatureArtifact, FeatureStep, FeatureWorkflow } from "./lib/feature-store";
 import { DEFAULT_AGENT_TOOLS, findAgent } from "./lib/agents-lib";
 
 const SCRATCH_DIR = ".pi/scratch";
@@ -136,6 +138,27 @@ function splitTitleAndRequest(value: string): { title: string; request: string }
   return title && request ? { title, request } : undefined;
 }
 
+function isWorkerProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+async function readWorkerCompletion(step: FeatureStep): Promise<{ exitCode: number; output: string } | undefined> {
+  if (!step.workerMetaFile) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(await readFile(step.workerMetaFile, "utf8"));
+    if (!isRecord(parsed) || typeof parsed.exitCode !== "number") return undefined;
+    const output = step.workerOutputFile ? await readFile(step.workerOutputFile, "utf8").catch(() => "") : "";
+    return { exitCode: parsed.exitCode, output };
+  } catch {
+    return undefined;
+  }
+}
+
 function formatPlan(workflow: FeatureWorkflow, cwd: string): string {
   const stepNames = new Map(workflow.steps.map((step, index) => [step.id, `${index + 1}. ${step.title}`]));
   const steps = workflow.steps.map((step, index) => {
@@ -179,6 +202,88 @@ export default function (pi: ExtensionAPI) {
       ...current,
       artifacts: { ...current.artifacts, [artifact]: path },
     }));
+  }
+
+  async function recoverRunningSteps(
+    ctx: ExtensionContext,
+    workflow: FeatureWorkflow,
+  ): Promise<FeatureWorkflow> {
+    const runningSteps = workflow.steps.filter((step) => step.status === "running");
+    if (runningSteps.length === 0) return workflow;
+
+    const assessments = new Map<string, {
+      runId?: string;
+      kind: "active" | "completed" | "interrupted" | "unknown";
+      completion?: { exitCode: number; output: string };
+      partialOutput?: string;
+    }>();
+    for (const step of runningSteps) {
+      const completion = await readWorkerCompletion(step);
+      if (completion) {
+        assessments.set(step.id, { runId: step.runId, kind: "completed", completion });
+      } else if (step.workerHost === hostname() && step.workerPid !== undefined) {
+        const alive = isWorkerProcessAlive(step.workerPid);
+        const partialOutput = !alive && step.workerOutputFile
+          ? await readFile(step.workerOutputFile, "utf8").catch(() => "")
+          : undefined;
+        assessments.set(step.id, {
+          runId: step.runId,
+          kind: alive ? "active" : "interrupted",
+          partialOutput,
+        });
+      } else {
+        assessments.set(step.id, { runId: step.runId, kind: "unknown" });
+      }
+    }
+
+    const unverified = runningSteps.filter((step) => assessments.get(step.id)?.kind === "unknown");
+    let retryUnverified = false;
+    if (unverified.length > 0) {
+      retryUnverified = await ctx.ui.confirm(
+        "Worker ownership cannot be verified",
+        [
+          ...unverified.map((step) => `${step.agent ?? "main"}: ${step.title} (${step.workerHost ?? "no host recorded"})`),
+          "",
+          "Mark these steps interrupted and allow explicit retry? If any worker is still running, retry may duplicate edits.",
+        ].join("\n"),
+      );
+    }
+
+    workflow = await updateFeatureWorkflowLatest(ctx.cwd, workflow.id, (current) => ({
+      ...current,
+      steps: current.steps.map((step) => {
+        if (step.status !== "running") return step;
+        const assessment = assessments.get(step.id);
+        if (!assessment || step.runId !== assessment.runId || assessment.kind === "active") return step;
+        if (assessment.kind === "unknown" && !retryUnverified) return step;
+
+        const completion = assessment.completion;
+        const success = completion?.exitCode === 0 && completion.output.trim().length > 0;
+        const result = completion
+          ? completion.output.trim().slice(-8000) || `Worker exited ${completion.exitCode} without a report`
+          : assessment.kind === "interrupted"
+            ? [`Worker process ${step.workerPid} exited before completion state was saved`, assessment.partialOutput?.trim().slice(-8000)].filter(Boolean).join("\n\n")
+            : "User confirmed worker could not be verified; inspect project changes before retry";
+        return {
+          ...step,
+          status: success ? "passed" : "failed",
+          result,
+          workerPid: undefined,
+          workerHost: undefined,
+          workerBackend: undefined,
+          paneRef: undefined,
+          workerOutputFile: undefined,
+          workerMetaFile: undefined,
+          startedAt: undefined,
+        };
+      }),
+    }));
+
+    const stillRunning = workflow.steps.filter((step) => step.status === "running");
+    if (stillRunning.length > 0) {
+      ctx.ui.notify(`Left active/unverified steps untouched: ${stillRunning.map((step) => `${step.agent ?? "main"} (${step.title})`).join(", ")}`, "info");
+    }
+    return workflow;
   }
 
   async function runAgent(
@@ -442,7 +547,7 @@ export default function (pi: ExtensionAPI) {
             workflow.summary ?? workflow.request,
             `Last error: ${workflow.lastError ?? "none"}`,
             "",
-            ...workflow.steps.map((step, index) => `${index + 1}. [${step.status}] ${step.title} — ${step.description} | executor: ${step.agent ?? "main"} | project: ${step.projectPath ?? ctx.cwd} | targets: ${step.targetPaths?.join(", ") || "unspecified"} | depends on: ${step.dependsOn?.join(", ") || "none"}`),
+            ...workflow.steps.map((step, index) => `${index + 1}. [${step.status}] ${step.title} — ${step.description} | executor: ${step.agent ?? "main"} | project: ${step.projectPath ?? ctx.cwd} | targets: ${step.targetPaths?.join(", ") || "unspecified"} | depends on: ${step.dependsOn?.join(", ") || "none"}${step.workerPid ? ` | worker: ${step.workerPid}@${step.workerHost} (${step.workerBackend ?? "terminal"} ${step.paneRef ?? ""})` : ""}${step.result ? ` | result: ${step.result.slice(-1000)}` : ""}`),
             "",
             ...await Promise.all(artifacts.filter((name) => workflow.artifacts[name]).map(async (name) =>
               `### ${name}\n\n${await readFeatureArtifact(ctx.cwd, id, name)}`,
@@ -458,19 +563,21 @@ export default function (pi: ExtensionAPI) {
 
         if (action === "resume") {
           if (workflow.stage === "execution" && workflow.approval === "approved") {
-            const firstUnfinished = workflow.steps.findIndex((step) => step.status !== "passed");
-            const currentIndex = firstUnfinished < 0 ? workflow.steps.length : firstUnfinished;
+            workflow = await recoverRunningSteps(ctx, workflow);
+            const nextRetryable = workflow.steps.findIndex((step) => step.status === "pending" || step.status === "failed");
+            const currentIndex = nextRetryable < 0 ? workflow.steps.length : nextRetryable;
             pi.appendEntry("plan-state", {
               task: workflow.request,
               summary: workflow.summary ?? "",
-              steps: workflow.steps.map(({ title, description, agent, projectPath, targetPaths, dependsOn }) => ({
-                title, description, agent: agent ?? "main", projectPath: projectPath ?? ctx.cwd,
+              steps: workflow.steps.map(({ id, title, description, agent, projectPath, targetPaths, dependsOn }) => ({
+                id, title, description, agent: agent ?? "main", projectPath: projectPath ?? ctx.cwd,
                 targetPaths: targetPaths ?? [], dependsOn: dependsOn ?? [],
               })),
               currentIndex,
               featureId: workflow.id,
             });
-            ctx.ui.notify(`Restored approved plan ${id}. Run /plan-next to continue${workflow.steps[firstUnfinished]?.status === "running" ? " (current step may have been interrupted)" : ""}.`, "info");
+            const running = workflow.steps.filter((step) => step.status === "running");
+            ctx.ui.notify(`Restored approved plan ${id}. ${running.length ? `${running.length} worker(s) remain active; no duplicate dispatch.` : "Run /plan-next to review/retry the next eligible step."}`, "info");
             return;
           }
           workflow = await runWorkflow(ctx, workflow);
@@ -496,8 +603,8 @@ export default function (pi: ExtensionAPI) {
           pi.appendEntry("plan-state", {
             task: workflow.request,
             summary: workflow.summary ?? "",
-            steps: workflow.steps.map(({ title, description, agent, projectPath, targetPaths, dependsOn }) => ({
-              title, description, agent: agent ?? "main", projectPath: projectPath ?? ctx.cwd,
+            steps: workflow.steps.map(({ id, title, description, agent, projectPath, targetPaths, dependsOn }) => ({
+              id, title, description, agent: agent ?? "main", projectPath: projectPath ?? ctx.cwd,
               targetPaths: targetPaths ?? [], dependsOn: dependsOn ?? [],
             })),
             currentIndex: 0,
@@ -523,6 +630,11 @@ export default function (pi: ExtensionAPI) {
         }
 
         if (action === "cancel") {
+          const activeSteps = workflow.steps.filter((step) => step.status === "running");
+          if (activeSteps.length > 0) {
+            ctx.ui.notify(`Cannot cancel while steps may still be editing: ${activeSteps.map((step) => `${step.agent ?? "main"} (${step.title})`).join(", ")}. Stop/wait for workers, then /feature resume ${id} to reconcile state.`, "warning");
+            return;
+          }
           const confirmed = await ctx.ui.confirm("Cancel feature workflow?", `${workflow.title}\n\nArtifacts will be kept under plans/features/${id}/.`);
           if (!confirmed) return;
           await update(ctx.cwd, workflow, (current) => ({

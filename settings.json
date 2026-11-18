@@ -1,8 +1,8 @@
 {
-  "lastChangelogVersion": "1.5.1",
+  "lastChangelogVersion": "1.5.2",
   "theme": "tokyonight-moon",
   "defaultProvider": "gaio",
-  "defaultModel": "scaleway/deepseek-v4.1-flash",
+  "defaultModel": "azure/gpt-6-luna",
   "defaultThinkingLevel": "medium",
   "skills": [
     "~/.opencode/skills",
@@ -15,16 +15,18 @@
     "npm:@bukutsu/pi-ping",
     "npm:@juicesharp/rpiv-todo",
     "npm:@juanibiapina/pi-tokyonight",
-    "npm:pi-starline"
+    "npm:pi-starline",
+    "npm:pi-web-access"
   ],
-  "extensions": [
-    "-builtin:mcp"
-  ],
+  "extensions": [],
   "enabledModels": [
     "github-copilot/kimi-k3",
     "gaio/azure/gpt-6-luna",
     "gaio/azure/gpt-6.1-terra",
     "gaio/azure/gpt-6.1-sol",
     "gaio/scaleway/deepseek-v4.1-flash"
-  ]
+  ],
+  "extensionChangelogVersions": {
+    "{\"source\":\"npm:pi-web-access\",\"scope\":\"user\"}": "0.48.0"
+  }
 }
