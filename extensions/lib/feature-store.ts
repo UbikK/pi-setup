@@ -20,6 +20,14 @@ export interface FeatureStep {
   projectPath?: string;
   targetPaths?: string[];
   dependsOn?: string[];
+  runId?: string;
+  workerPid?: number;
+  workerHost?: string;
+  workerBackend?: "cmux" | "ghostty";
+  paneRef?: string;
+  workerOutputFile?: string;
+  workerMetaFile?: string;
+  startedAt?: string;
   verification?: string[];
   result?: string;
 }
@@ -113,7 +121,15 @@ function validateWorkflow(value: unknown, id?: string): FeatureWorkflow {
     (step.targetPaths === undefined || (Array.isArray(step.targetPaths) && step.targetPaths.every((path) =>
       typeof path === "string" && path.trim() !== "" && !isAbsolute(path) && !path.split(/[\\/]+/).includes(".."),
     ))) &&
-    (step.dependsOn === undefined || (Array.isArray(step.dependsOn) && step.dependsOn.every((id) => typeof id === "string")))
+    (step.dependsOn === undefined || (Array.isArray(step.dependsOn) && step.dependsOn.every((id) => typeof id === "string"))) &&
+    (step.runId === undefined || typeof step.runId === "string") &&
+    (step.workerPid === undefined || (Number.isInteger(step.workerPid) && (step.workerPid as number) > 0)) &&
+    (step.workerHost === undefined || typeof step.workerHost === "string") &&
+    (step.workerBackend === undefined || ["cmux", "ghostty"].includes(step.workerBackend as string)) &&
+    (step.paneRef === undefined || typeof step.paneRef === "string") &&
+    (step.workerOutputFile === undefined || (typeof step.workerOutputFile === "string" && isAbsolute(step.workerOutputFile))) &&
+    (step.workerMetaFile === undefined || (typeof step.workerMetaFile === "string" && isAbsolute(step.workerMetaFile))) &&
+    (step.startedAt === undefined || typeof step.startedAt === "string")
   );
   const stepPositions = validSteps ? new Map(workflow.steps.map((step, index) => [step.id, index])) : new Map<string, number>();
   const validDependencies = validSteps && stepPositions.size === workflow.steps.length && workflow.steps.every((step) =>
@@ -329,6 +345,25 @@ export async function updateFeatureWorkflow(
     await atomicWrite(join(getFeatureDir(cwd, id), "workflow.json"), `${JSON.stringify(saved, null, 2)}\n`);
     return saved;
   });
+}
+
+export async function updateFeatureWorkflowLatest(
+  cwd: string,
+  id: string,
+  update: (current: FeatureWorkflow) => FeatureWorkflow,
+  maxAttempts = 5,
+): Promise<FeatureWorkflow> {
+  let staleError: FeatureStoreError | undefined;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const current = await readFeatureWorkflow(cwd, id);
+    try {
+      return await updateFeatureWorkflow(cwd, id, current.revision, update);
+    } catch (error) {
+      if (!(error instanceof FeatureStoreError) || error.code !== "stale_revision") throw error;
+      staleError = error;
+    }
+  }
+  throw staleError ?? new FeatureStoreError("Feature update retry limit must be positive", "stale_revision");
 }
 
 export async function writeFeatureArtifact(

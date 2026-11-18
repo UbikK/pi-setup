@@ -14,6 +14,11 @@
       "args": [
         "mcp-npm-registry"
       ]
+    },
+    "github": {
+      "url": "https://api.githubcopilot.com/mcp/",
+      "description": "Search and work with GitHub repositories, issues, pull requests, and code.",
+      "exposure": "deferred"
     }
   }
 }

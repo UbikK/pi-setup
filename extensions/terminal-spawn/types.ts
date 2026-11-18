@@ -4,6 +4,23 @@ export type SplitDirection = "left" | "right" | "up" | "down";
 
 export type SpawnBackend = "cmux" | "ghostty" | "headless";
 
+export interface SpawnWorker {
+  pid: number;
+  host: string;
+  backend: Exclude<SpawnBackend, "headless">;
+  paneRef?: string;
+  outputFile: string;
+  metaFile: string;
+}
+
+export interface RunScriptOptions {
+  command: string[];
+  cwd: string;
+  outputFile: string;
+  metaFile: string;
+  pidFile: string;
+}
+
 export interface SpawnOptions {
   ctx: ExtensionContext;
   /** Command and arguments to execute. The first element is the executable. */
@@ -16,6 +33,10 @@ export interface SpawnOptions {
   label?: string;
   /** Pane split direction. Defaults to "right". */
   direction?: SplitDirection;
+  /** Require cmux/Ghostty pane instead of silently running headless. */
+  requireTerminal?: boolean;
+  /** Persist worker ownership after its process starts in the terminal. */
+  onStart?: (worker: SpawnWorker) => Promise<void> | void;
   /** Max time to wait for completion, in ms. Defaults to 10 minutes. */
   timeoutMs?: number;
 }
